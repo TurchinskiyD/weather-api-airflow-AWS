@@ -1,4 +1,6 @@
 # Byte-compiled / optimized / DLL files
+
+get_weather.py
 __pycache__/
 *.py[cod]
 *$py.class
