@@ -1,9 +1,13 @@
 
 from airflow import DAG
+from airflow.operators.dummy_operator import DummyOperator
+from airflow.providers.postgres.operators.postgres import PostgresOperator
+from airflow.providers.postgres.hooks.postgres import PostgresHook
 from datetime import timedelta, datetime, timezone
 from airflow.providers.http.sensors.http import HttpSensor
 from airflow.providers.http.operators.http import SimpleHttpOperator
 from airflow.operators.python import PythonOperator
+from airflow.utils.task_group import TaskGroup
 import pandas as pd
 import json
 
@@ -15,6 +19,11 @@ def kelvin_to_celsius(temp_in_kelvin):
 
 def transform_load_data(task_instance):
       data = task_instance.xcom_pull(task_ids='extract_weather_data')
+
+         # Перевірка, чи дані були отримані успішно
+      if not data:
+        raise ValueError("Дані від API не отримані або є порожніми.")
+
       city = data['name']
       weather_description = data['weather'][0]['description']
       temp_celsius = kelvin_to_celsius(data['main']['temp'])
@@ -35,7 +44,7 @@ def transform_load_data(task_instance):
                         "Min Temp (°C)": min_temp_celsius,
                         "Max Temp (°C)": max_temp_celsius,
                         "Pressure": pressure,
-                        "Humidty": humidity,
+                        "Humidity": humidity,
                         "Wind Speed (m/s)": wind_speed,
                         "Time of Record": time_of_record,
                         "Sunrise (Local Time)":sunrise_time,
@@ -43,12 +52,31 @@ def transform_load_data(task_instance):
                         }
       transform_data_list = [transformed_data]
       df_data = pd.DataFrame(transform_data_list)
+      df_data.to_csv('current_weathe_data.csv', index=False, header=False)
 
-      now = datetime.now()
-      dt_string = now.strftime("%d%m%Y%H%M%S")
-      dt_string = 'current_weather_data_' + city + dt_string
-      df_data.to_csv(f"{dt_string}.csv", index=False)
-      df_data.to_csv(f"s3://weatferapiairflow/{dt_string}.csv", index=False)
+
+def load_joined_data_to_s3(task_instance):
+    data = task_instance.xcom_pull(task_ids="task_join_data")
+    df = pd.DataFrame(data, columns = ['city', 'description', 'temperature_celsius', 
+                                       'feels_like_celsius', 'min_temp_celsius', 
+                                       'max_temp_celsius', 'pressure','humidity', 
+                                       'wind_speed', 'time_of_record', 
+                                       'sunrise_local_time', 'sunset_local_time', 
+                                       'state', 'population_2020', 'land_area_sq_km', 
+                                       'population_density'])
+
+    now = datetime.now()
+    city = data[0][0]
+    dt_string = now.strftime("%d%m%Y%H%M")
+    dt_string = 'joined_weather_data_' + city + dt_string
+    df.to_csv(f"s3://weatferapiairflow/{dt_string}.csv", index=False)
+
+
+def load_weather():
+    hook = PostgresHook(postgres_conn_id = 'postgres_conn')
+    hook.copy_expert(
+         sql="COPY weather_data FROM stdin WITH DELIMITER as ',' ",
+         filename='current_weathe_data.csv')
 
 
 
@@ -69,30 +97,118 @@ with DAG('weather_dag',
         default_args=default_args,
         schedule_interval = '@daily',
         catchup=False) as dag:
-
-
-        is_weather_api_ready = HttpSensor(
-        task_id ='is_weather_api_ready',
-        http_conn_id='weathermap_api',
-        endpoint='/data/2.5/weather?q=Kharkiv&appid=aef3a48e4ae3eb5c201ea75e1d05bdde',
-        response_check=lambda response: "weather" in response.json(),
-        poke_interval=5,
-        timeout=20
+        
+        start_pipeline = DummyOperator(
+            task_id ='task_start_pipeline',
         )
 
-        extract_weather_data = SimpleHttpOperator(
-        task_id ='extract_weather_data',
-        http_conn_id='weathermap_api',
-        endpoint='/data/2.5/weather?q=Kharkiv&appid=aef3a48e4ae3eb5c201ea75e1d05bdde',
-        method = 'GET',
-        response_filter = lambda r: json.loads(r.text),
-        log_response = True
+        join_data = PostgresOperator(
+             task_id = 'tsk_join_data',
+             postgres_conn_id='postgres_conn',
+             sql = """SELECT
+                wd.city, 
+                wd.description, 
+                wd.temperature_celsius,
+                wd.feels_like_celsius,
+                wd.min_temp_celsius,
+                wd.max_temp_celsius,
+                wd.pressure,
+                wd.humidity,
+                wd.wind_speed, 
+                wd.time_of_record,
+                wd.sunrise_local_time,
+                wd.sunset_local_time,
+                cl.state,
+                cl.population_2020,
+                cl.land_area_sq_km, 
+                cl.population_density
+                FROM weather_data AS wd
+                INNER JOIN city_look_up AS cl
+                USING(city);
+            """
         )
 
-        transform_load_weather_data = PythonOperator(
-        task_id ='transform_load_weather_data',
-        python_callable=transform_load_data
+        load_joined_data = PythonOperator(
+             task_id = 'tsk_load_joined_data',
+             python_callable=load_joined_data_to_s3
         )
 
+        end_pipeline = DummyOperator(
+            task_id = 'task_end_pipeline'
+        )
 
-        is_weather_api_ready >> extract_weather_data >> transform_load_weather_data
+        with TaskGroup(group_id = 'group_a', tooltip= "Extract_from_S3_and_weatherapi") as group_A:
+            create_table_1 = PostgresOperator(
+                task_id='tsk_create_table_1',
+                postgres_conn_id = "postgres_conn",
+                sql= '''  
+                    CREATE TABLE IF NOT EXISTS city_look_up (
+                    city TEXT NOT NULL,
+                    state TEXT NOT NULL,
+                    population_2020 numeric NOT NULL,
+                    land_area_sq_km numeric NOT NULL,
+                    population_density numeric NOT NULL);
+                    '''
+            )
+
+            truncate_table = PostgresOperator(
+                task_id='tsk_truncate_table',
+                postgres_conn_id = "postgres_conn",
+                sql= '''TRUNCATE TABLE city_look_up;'''
+            )
+
+            uploadS3_to_postgres  = PostgresOperator(
+                task_id = "tsk_uploadS3_to_postgres",
+                postgres_conn_id = "postgres_conn",
+                sql = "SELECT aws_s3.table_import_from_s3('city_look_up', '', '(format csv, DELIMITER '','', HEADER true)', 'static-for-weather-airflow', 'ua_city.csv', 'eu-north-1');"
+            )
+            
+            create_table_2 = PostgresOperator(
+                task_id='tsk_create_table_2',
+                postgres_conn_id = "postgres_conn",
+                sql= ''' 
+                    CREATE TABLE IF NOT EXISTS weather_data (
+                    city TEXT,
+                    description TEXT,
+                    temperature_celsius NUMERIC,
+                    feels_like_celsius NUMERIC,
+                    min_temp_celsius NUMERIC,
+                    max_temp_celsius NUMERIC,
+                    pressure NUMERIC,
+                    humidity NUMERIC,
+                    wind_speed NUMERIC,
+                    time_of_record TIMESTAMP,
+                    sunrise_local_time TIMESTAMP,
+                    sunset_local_time TIMESTAMP);
+                    '''
+            )
+
+            is_weather_api_ready = HttpSensor(
+                task_id ='tsk_weather_api_ready',
+                http_conn_id='weathermap_api',
+                endpoint='/data/2.5/weather?q=Kharkiv&appid=aef3a48e4ae3eb5c201ea75e1d05bdde',
+            )
+
+            extract_weather_data = SimpleHttpOperator(
+                task_id ='tsk_extract_weather_data',
+                http_conn_id='weathermap_api',
+                endpoint='/data/2.5/weather?q=Kharkiv&appid=aef3a48e4ae3eb5c201ea75e1d05bdde',
+                method = 'GET',
+                response_filter = lambda r: json.loads(r.text),
+                log_response = True
+            )
+
+            transform_load_weather_data = PythonOperator(
+                task_id ='tsk_transform_load_weather_data',
+                python_callable=transform_load_data
+            )
+
+            load_weather_data = PythonOperator(
+                task_id = 'tsk_load_weather_data',
+                python_callable= load_weather
+            )
+
+            create_table_1 >> truncate_table >> uploadS3_to_postgres
+            create_table_2 >> is_weather_api_ready >> extract_weather_data >> transform_load_weather_data >> load_weather_data
+         
+        start_pipeline >> group_A >> join_data >> load_joined_data >> end_pipeline
