@@ -1,0 +1,6 @@
+city,description,temperature_celsius,feels_like_celsius,min_temp_celsius,max_temp_celsius,pressure,humidity,wind_speed,time_of_record,sunrise_local_time,sunset_local_time,state,population_2020,land_area_sq_km,population_density
+Kharkiv,broken clouds,13.65,12.27,13.65,13.65,1030,46,2.14,2025-04-17 00:45:58+00:00,2025-04-17 05:37:53+00:00,2025-04-17 19:30:49+00:00,Kharkivska,1443207,350,4065
+Kharkiv,overcast clouds,14.13,12.72,14.13,14.13,1030,43,2.23,2025-04-17 00:27:25+00:00,2025-04-17 05:37:53+00:00,2025-04-17 19:30:49+00:00,Kharkivska,1443207,350,4065
+Kharkiv,overcast clouds,14.13,12.72,14.13,14.13,1030,43,2.23,2025-04-17 00:26:30+00:00,2025-04-17 05:37:53+00:00,2025-04-17 19:30:49+00:00,Kharkivska,1443207,350,4065
+Kharkiv,overcast clouds,14.17,12.77,14.17,14.17,1030,43,2.23,2025-04-17 00:07:24+00:00,2025-04-17 05:37:53+00:00,2025-04-17 19:30:49+00:00,Kharkivska,1443207,350,4065
+Kharkiv,overcast clouds,14.24,12.87,14.24,14.24,1030,44,2.23,2025-04-16 23:59:48+00:00,2025-04-17 05:37:53+00:00,2025-04-17 19:30:49+00:00,Kharkivska,1443207,350,4065
