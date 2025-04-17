@@ -54,7 +54,7 @@ chmod +x create-rds-postgres.sh
 chmod +x install_postgresql.sh
 ./install_postgresql.sh
 ```
-# 4.1 Підключаємося для перевірки
+#### 4.1 Підключаємося для перевірки
 ```bash
 psql -h rds-db-for-open-weather......us-west-2.rds.amazonaws.com -p 5432 -U postgres -W
 \db
